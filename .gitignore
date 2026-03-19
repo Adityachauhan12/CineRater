@@ -1,0 +1,47 @@
+# Python
+*.py[cod]
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+env/
+
+# Django
+*.log
+db.sqlite3
+media/
+staticfiles/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AWS credentials
+.aws/
+
+# Redis dump
+dump.rdb
+
+# Claude Code
+.claude/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# React
+frontend/build/
+frontend/.env
