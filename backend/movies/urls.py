@@ -15,6 +15,9 @@ from movies.recommendation_views import (
 from movies.semantic_search_view import SemanticSearchView
 from movies.browse_view import BrowseView, GenreListView
 from movies.chat_views import chat_stream
+from movies.import_views import ImdbImportView
+from movies.review_views import ContentReviewsView, ReviewDeleteView, ContentAskView
+from movies.chat_session_views import ChatSessionListView, ChatSessionDetailView, ChatMessageListView
 
 urlpatterns = [
     path('movies/', MovieListView.as_view(), name='movie-list'),
@@ -33,6 +36,11 @@ urlpatterns = [
     # AI chat agent (SSE streaming)
     path('chat/', chat_stream, name='chat'),
 
+    # Persistent chat sessions
+    path('chat/sessions/', ChatSessionListView.as_view(), name='chat-sessions'),
+    path('chat/sessions/<int:pk>/', ChatSessionDetailView.as_view(), name='chat-session-detail'),
+    path('chat/sessions/<int:pk>/messages/', ChatMessageListView.as_view(), name='chat-session-messages'),
+
     # User ratings list
     path('user/ratings/', UserRatingsView.as_view(), name='user-ratings'),
 
@@ -45,6 +53,14 @@ urlpatterns = [
     path('watchlist/', WatchlistView.as_view(), name='watchlist'),
     path('watchlist/add/', WatchlistAddView.as_view(), name='watchlist-add'),
     path('watchlist/<int:pk>/', WatchlistRemoveView.as_view(), name='watchlist-remove'),
+
+    # IMDB import
+    path('import/imdb/', ImdbImportView.as_view(), name='imdb-import'),
+
+    # Reviews + RAG Q&A
+    path('content/<int:pk>/reviews/', ContentReviewsView.as_view(), name='content-reviews'),
+    path('content/<int:pk>/reviews/<int:review_pk>/', ReviewDeleteView.as_view(), name='review-delete'),
+    path('content/<int:pk>/ask/', ContentAskView.as_view(), name='content-ask'),
 
     # Recommendation endpoints
     path('recommendations/', RecommendationsView.as_view(), name='recommendations'),

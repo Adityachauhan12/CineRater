@@ -68,9 +68,9 @@ class Rating(models.Model):
         choices=[('movie', 'Movie'), ('tvshow', 'TV Show')]
     )
     score = models.DecimalField(
-        max_digits=2,
+        max_digits=3,
         decimal_places=1,
-        validators=[MinValueValidator(1.0), MaxValueValidator(5.0)]
+        validators=[MinValueValidator(1.0), MaxValueValidator(10.0)]
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -113,6 +113,63 @@ class ContentEmbedding(models.Model):
 
     def __str__(self):
         return f"{self.content_type}:{self.tmdb_id} — {self.title}"
+
+
+class ChatSession(models.Model):
+    """One persistent conversation between a user and CineBot."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='chat_sessions')
+    title = models.CharField(max_length=120)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'chat_sessions'
+        ordering = ['-updated_at']
+        indexes = [models.Index(fields=['user'])]
+
+    def __str__(self):
+        return f"{self.user.email} — {self.title}"
+
+
+class ChatMessage(models.Model):
+    """A single message within a ChatSession."""
+    session = models.ForeignKey(ChatSession, on_delete=models.CASCADE, related_name='messages')
+    role = models.CharField(max_length=10, choices=[('user', 'User'), ('assistant', 'Assistant')])
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'chat_messages'
+        ordering = ['created_at']
+        indexes = [models.Index(fields=['session'])]
+
+    def __str__(self):
+        return f"{self.role}: {self.content[:60]}"
+
+
+class Review(models.Model):
+    """User text reviews for movies and TV shows, with embedding for RAG Q&A."""
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reviews')
+    content_id = models.IntegerField()
+    content_type = models.CharField(
+        max_length=10,
+        choices=[('movie', 'Movie'), ('tvshow', 'TV Show')]
+    )
+    body = models.TextField()
+    embedding = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'reviews'
+        unique_together = ('user', 'content_id', 'content_type')
+        indexes = [
+            models.Index(fields=['content_id', 'content_type']),
+            models.Index(fields=['user']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} - {self.content_type} {self.content_id}"
 
 
 class Watchlist(models.Model):

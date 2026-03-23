@@ -20,8 +20,6 @@ from services.tmdb_service import TMDBService
 from services.embedding_service import EmbeddingService
 from services.rating_service import RatingService
 from services.watchlist_service import WatchlistService
-from services.gemini_service import GeminiService
-
 logger = logging.getLogger(__name__)
 
 # Groq is OpenAI-compatible — just different base_url and model
@@ -284,8 +282,7 @@ def _execute_tool(tool_name: str, tool_args: dict, user) -> str:
 
 def run_agent_stream(messages: list, user) -> Generator[str, None, None]:
     """
-    Agentic loop with SSE streaming output.
-    Uses OpenAI with Gemini fallback.
+    Agentic loop with SSE streaming output using Groq.
     Yields SSE-formatted strings (data: <json>\\n\\n).
 
     Flow:
@@ -295,39 +292,11 @@ def run_agent_stream(messages: list, user) -> Generator[str, None, None]:
     """
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
 
-    # For Gemini, we'll use a simplified approach without tool calling
-    # since Gemini's tool calling is more complex to implement
-    
     try:
-        if USE_OPENAI:
-            try:
-                yield from _run_openai_agent(conversation, user)
-                return
-            except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower() or "rate" in str(e).lower():
-                    logger.warning(f"Groq rate limited, falling back to Gemini: {e}")
-                else:
-                    # Non-recoverable Groq error — surface it cleanly, don't go to Gemini
-                    logger.error(f"Groq agent failed: {e}")
-                    yield f"data: {json.dumps({'type': 'text', 'content': 'I ran into a problem. Please try again.'})}\n\n"
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
-                    return
-
-        # Fallback to Gemini (simplified, no tool calling)
-        logger.info("Using Gemini for chat")
-        # Clean conversation to plain dicts — Gemini can't handle ChatCompletionMessage objects
-        clean_conv = [
-            {"role": m.role, "content": m.content or ""}
-            if not isinstance(m, dict) else m
-            for m in conversation
-            if isinstance(m, dict) or hasattr(m, 'role')
-        ]
-        yield from _run_gemini_agent(clean_conv, user)
-
+        yield from _run_openai_agent(conversation, user)
     except Exception as e:
         logger.error(f"Agent failed: {e}")
-        error_msg = "Sorry, I am having trouble right now. Please try again later."
-        yield f"data: {json.dumps({'type': 'text', 'content': error_msg})}\n\n"
+        yield f"data: {json.dumps({'type': 'text', 'content': 'I ran into a problem. Please try again.'})}\n\n"
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
 
@@ -449,79 +418,6 @@ def _run_openai_agent(conversation: list, user) -> Generator[str, None, None]:
     yield f"data: {json.dumps({'type': 'text', 'content': 'Sorry, I ran into an issue. Please try again.'})}\n\n"
     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-
-def _run_gemini_agent(conversation: list, user) -> Generator[str, None, None]:
-    """Run agent with Gemini (simplified, no tool calling)"""
-    # Get user's last message to understand intent
-    def _get(m, key):
-        return m[key] if isinstance(m, dict) else getattr(m, key, None)
-    user_message = next((_get(m, 'content') for m in reversed(conversation) if _get(m, 'role') == 'user'), "") or ""
-    
-    # Simple intent detection and tool execution
-    response_text = ""
-    
-    if any(word in user_message.lower() for word in ['search', 'find', 'recommend', 'suggest', 'watch']):
-        # Execute search tool
-        yield f"data: {json.dumps({'type': 'tool_call', 'tool': 'search_movies', 'args': {'query': user_message}})}\n\n"
-        
-        result_str = _execute_tool('search_movies', {'query': user_message, 'limit': 5}, user)
-        result_data = json.loads(result_str)
-        
-        yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'search_movies', 'result': result_data})}\n\n"
-        
-        # Build response based on results
-        results = result_data.get('results', [])
-        if results:
-            response_text = f"I found some great options for you:\n\n"
-            for i, item in enumerate(results[:3], 1):
-                title = item.get('title', 'Unknown')
-                genres = ', '.join(item.get('genres', []))
-                overview = item.get('overview', '')[:100]
-                response_text += f"{i}. **{title}** ({genres})\n{overview}...\n\n"
-        else:
-            response_text = "I couldn't find any matches for that search. Try a different query!"
-    
-    elif any(word in user_message.lower() for word in ['rated', 'rating', 'scored']):
-        # Execute ratings tool
-        yield f"data: {json.dumps({'type': 'tool_call', 'tool': 'get_my_ratings', 'args': {}})}\n\n"
-        
-        result_str = _execute_tool('get_my_ratings', {'limit': 10}, user)
-        result_data = json.loads(result_str)
-        
-        yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'get_my_ratings', 'result': result_data})}\n\n"
-        
-        ratings = result_data.get('ratings', [])
-        if ratings:
-            response_text = f"Here are your recent ratings:\n\n"
-            for rating in ratings[:5]:
-                response_text += f"• Content ID {rating['content_id']} - {rating['score']}/5.0 stars\n"
-        else:
-            response_text = "You haven't rated any content yet. Start watching and rating to get personalized recommendations!"
-    
-    elif any(word in user_message.lower() for word in ['watchlist', 'saved', 'list']):
-        # Execute watchlist tool
-        yield f"data: {json.dumps({'type': 'tool_call', 'tool': 'get_my_watchlist', 'args': {}})}\n\n"
-        
-        result_str = _execute_tool('get_my_watchlist', {}, user)
-        result_data = json.loads(result_str)
-        
-        yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'get_my_watchlist', 'result': result_data})}\n\n"
-        
-        watchlist = result_data.get('watchlist', [])
-        if watchlist:
-            response_text = f"Your watchlist has {len(watchlist)} items:\n\n"
-            for item in watchlist[:5]:
-                response_text += f"• {item['content_type'].title()} ID {item['content_id']}\n"
-        else:
-            response_text = "Your watchlist is empty. Add some movies or shows to watch later!"
-    
-    else:
-        # General response using Gemini (conversation is already cleaned to plain dicts)
-        gemini_response = GeminiService.chat_completion(conversation)
-        response_text = gemini_response or "I'm here to help you discover movies and TV shows! Try asking me to search for something or check your ratings."
-    
-    # Stream the response
-    yield from _stream_text(response_text)
 
 
 def _stream_text(text: str) -> Generator[str, None, None]:

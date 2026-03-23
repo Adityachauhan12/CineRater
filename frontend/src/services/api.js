@@ -223,8 +223,8 @@ export const deleteRating = (id, content_type) =>
 export const getRatings = (id, content_type) =>
     api.get(`/content/${id}/ratings/`, { params: { content_type } });
 
-export const getUserRatings = () =>
-    api.get('/user/ratings/');
+export const getUserRatings = (page = 1, filter = 'all', sort = 'recent') =>
+    api.get('/user/ratings/', { params: { page, filter, sort } });
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
 
@@ -286,6 +286,87 @@ export const getRecommendations = () =>
  */
 export const getPopularContent = (region = 'IN') =>
     api.get('/recommendations/popular/', { params: { region } });
+
+/**
+ * Import IMDB ratings or watchlist from a CSV file.
+ * @param {File} file - The CSV file from IMDB export
+ * @param {'ratings'|'watchlist'} importType
+ */
+export const importFromImdb = (file, importType) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('import_type', importType);
+    return api.post('/import/imdb/', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,  // 2 min — 1000 items can take ~15s but give headroom
+    });
+};
+
+// ─── Chat Sessions ────────────────────────────────────────────────────────────
+
+/** List all chat sessions for the current user. */
+export const getChatSessions = () =>
+    api.get('/chat/sessions/');
+
+/**
+ * Create a new chat session.
+ * @param {string} title - derived from the first message
+ */
+export const createChatSession = (title) =>
+    api.post('/chat/sessions/', { title });
+
+/** Delete a chat session and all its messages. */
+export const deleteChatSession = (id) =>
+    api.delete(`/chat/sessions/${id}/`);
+
+/** Get all messages for a session. */
+export const getChatMessages = (sessionId) =>
+    api.get(`/chat/sessions/${sessionId}/messages/`);
+
+/**
+ * Append messages to a session after a stream completes.
+ * @param {number} sessionId
+ * @param {Array<{role: string, content: string}>} messages
+ */
+export const saveChatMessages = (sessionId, messages) =>
+    api.post(`/chat/sessions/${sessionId}/messages/`, { messages });
+
+// ─── Reviews + RAG Q&A ───────────────────────────────────────────────────────
+
+/**
+ * Get all reviews for a piece of content.
+ * @param {number|string} id
+ * @param {string} content_type - 'movie' | 'tvshow'
+ */
+export const getReviews = (id, content_type) =>
+    api.get(`/content/${id}/reviews/`, { params: { content_type } });
+
+/**
+ * Submit (create or update) a review.
+ * @param {number|string} id
+ * @param {string} content_type
+ * @param {string} body - review text
+ */
+export const submitReview = (id, content_type, body) =>
+    api.post(`/content/${id}/reviews/`, { content_type, body });
+
+/**
+ * Delete a review by its ID.
+ * @param {number|string} contentId
+ * @param {number|string} reviewId
+ */
+export const deleteReview = (contentId, reviewId) =>
+    api.delete(`/content/${contentId}/reviews/${reviewId}/`);
+
+/**
+ * Ask a RAG-powered question about a movie/show based on user reviews.
+ * @param {number|string} id
+ * @param {string} content_type
+ * @param {string} title
+ * @param {string} question
+ */
+export const askQuestion = (id, content_type, title, question) =>
+    api.post(`/content/${id}/ask/`, { content_type, title, question });
 
 // ─── Token Utilities (used by AuthContext) ────────────────────────────────────
 

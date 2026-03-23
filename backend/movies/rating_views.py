@@ -39,11 +39,11 @@ class ContentRateView(APIView):
         
         try:
             score = float(score)
-            if score < 1.0 or score > 5.0:
+            if score < 1.0 or score > 10.0:
                 return Response({
                     'success': False,
                     'error': 'validation_error',
-                    'message': {'score': ['Score must be between 1.0 and 5.0']}
+                    'message': {'score': ['Score must be between 1.0 and 10.0']}
                 }, status=status.HTTP_400_BAD_REQUEST)
         except (ValueError, TypeError):
             return Response({
@@ -149,13 +149,49 @@ class ContentRatingsView(APIView):
 
 
 class UserRatingsView(APIView):
-    """Get all ratings for the current user, enriched with TMDB data"""
+    """Get user ratings — server-side filter/sort/pagination + overall stats."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        ratings = Rating.objects.filter(user=request.user).order_by('-created_at')
-        result = []
-        for r in ratings:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from django.db.models import Avg
+
+        PAGE_SIZE = 60
+        page        = max(1, int(request.query_params.get('page', 1)))
+        filter_type = request.query_params.get('filter', 'all')   # all | movie | tvshow
+        sort_by     = request.query_params.get('sort', 'recent')  # recent | high | low
+
+        # Base queryset
+        qs = Rating.objects.filter(user=request.user)
+
+        # Filter
+        if filter_type == 'movie':
+            qs = qs.filter(content_type='movie')
+        elif filter_type == 'tvshow':
+            qs = qs.filter(content_type='tvshow')
+
+        # Sort
+        if sort_by == 'high':
+            qs = qs.order_by('-score', '-created_at')
+        elif sort_by == 'low':
+            qs = qs.order_by('score', '-created_at')
+        else:
+            qs = qs.order_by('-created_at')
+
+        total = qs.count()
+        offset = (page - 1) * PAGE_SIZE
+        ratings = list(qs[offset:offset + PAGE_SIZE])
+
+        # Overall stats (across all ratings, ignoring filter for counts)
+        all_qs = Rating.objects.filter(user=request.user)
+        stats = {
+            'total':    all_qs.count(),
+            'movies':   all_qs.filter(content_type='movie').count(),
+            'tvshows':  all_qs.filter(content_type='tvshow').count(),
+            'avg':      round(float(all_qs.aggregate(a=Avg('score'))['a'] or 0), 1),
+        }
+
+        def fetch(r):
             try:
                 if r.content_type == 'movie':
                     content = TMDBService.get_movie_details(r.content_id)
@@ -165,10 +201,36 @@ class UserRatingsView(APIView):
                     content['user_rating'] = float(r.score)
                     content['content_type'] = r.content_type
                     content['rated_at'] = r.created_at.isoformat()
-                    result.append(content)
+                    return content
             except Exception:
-                continue
-        return Response({'success': True, 'count': len(result), 'data': result})
+                pass
+            return None
+
+        result = []
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            futures = {executor.submit(fetch, r): r for r in ratings}
+            for fut in as_completed(futures):
+                item = fut.result()
+                if item:
+                    result.append(item)
+
+        # Re-sort to match DB order (parallel fetch scrambles it)
+        if sort_by == 'high':
+            result.sort(key=lambda x: x.get('user_rating', 0), reverse=True)
+        elif sort_by == 'low':
+            result.sort(key=lambda x: x.get('user_rating', 0))
+        else:
+            result.sort(key=lambda x: x.get('rated_at', ''), reverse=True)
+
+        return Response({
+            'success': True,
+            'count': len(result),
+            'total': total,
+            'page': page,
+            'total_pages': max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE),
+            'stats': stats,
+            'data': result,
+        })
 
 
 class WatchlistView(APIView):

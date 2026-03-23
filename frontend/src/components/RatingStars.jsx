@@ -6,14 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 
 /**
- * Interactive 1–5 star rating component.
- *
- * Props:
- *  - contentId    {number}  – ID of the content item
- *  - contentType  {string}  – 'movie' | 'tvshow'
- *  - initialRating {number|null} – already-submitted rating (or null)
- *  - onRated      {(score) => void} – callback after successful rate
- *  - readonly     {boolean} – render without interaction (for display only)
+ * Interactive 1–10 star rating component.
  */
 const RatingStars = ({
     contentId,
@@ -38,7 +31,6 @@ const RatingStars = ({
         setLoading(true);
         try {
             if (rating === score) {
-                // Toggle off — delete the rating
                 await deleteRating(contentId, contentType);
                 setRating(null);
                 toast.success('Rating removed.');
@@ -46,7 +38,7 @@ const RatingStars = ({
             } else {
                 await submitRating(contentId, contentType, score);
                 setRating(score);
-                toast.success(`Rated ${score}/5 ⭐`);
+                toast.success(`Rated ${score}/10 ⭐`);
                 onRated?.(score);
             }
         } catch (err) {
@@ -57,15 +49,15 @@ const RatingStars = ({
     };
 
     return (
-        <div className="flex items-center gap-1">
-            {[1, 2, 3, 4, 5].map((star) => {
+        <div className="flex items-center gap-0.5">
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((star) => {
                 const filled = star <= active;
                 return readonly ? (
                     <span key={star}>
                         {filled ? (
-                            <StarIcon className="w-5 h-5 text-yellow-400" />
+                            <StarIcon className="w-4 h-4 text-gold" />
                         ) : (
-                            <StarOutline className="w-5 h-5 text-gray-600" />
+                            <StarOutline className="w-4 h-4 text-ink-muted" />
                         )}
                     </span>
                 ) : (
@@ -76,18 +68,18 @@ const RatingStars = ({
                         onClick={() => handleRate(star)}
                         disabled={loading}
                         className="transition-transform hover:scale-125 disabled:cursor-not-allowed"
-                        aria-label={`Rate ${star} star${star > 1 ? 's' : ''}`}
+                        aria-label={`Rate ${star}`}
                     >
                         {filled ? (
-                            <StarIcon className="w-6 h-6 text-yellow-400 drop-shadow-sm" />
+                            <StarIcon className="w-5 h-5 text-gold drop-shadow-sm" />
                         ) : (
-                            <StarOutline className="w-6 h-6 text-gray-500 hover:text-yellow-300 transition-colors" />
+                            <StarOutline className="w-5 h-5 text-ink-muted hover:text-gold/60 transition-colors" />
                         )}
                     </button>
                 );
             })}
             {rating && !readonly && (
-                <span className="ml-1 text-xs text-gray-500">{rating}/5</span>
+                <span className="ml-2 text-xs text-ink-muted">{rating}/10</span>
             )}
         </div>
     );

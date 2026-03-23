@@ -1,119 +1,88 @@
 from typing import Dict, List
 from collections import Counter
-from movies.models import Rating, Watchlist, Movie, TVShow
-from services.watchlist_service import WatchlistService
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from movies.models import Rating, Watchlist
+from services.tmdb_service import TMDBService
 
 
 class UserContextService:
-    """Service for building user context (MCP-style) for AI recommendations"""
-    
+    """Build user taste context from actual ratings via TMDB lookup."""
+
     @staticmethod
-    def build_context(user) -> Dict:
+    def build_context(user, top_n: int = 20) -> Dict:
         """
-        Build comprehensive user context for AI recommendations
-        
-        Args:
-            user: User instance
-            
-        Returns:
-            Dict with user preferences and history
+        Build user context from their top-rated content.
+        Uses TMDB for title/genre data, not the sparse DB models.
+        Only fetches `top_n` highest-rated items to keep it fast.
         """
-        # Get user's watchlist with details
-        watchlist_data = WatchlistService.get_watchlist(user)
-        
-        # Get user's ratings with content details
-        rated_content = UserContextService._get_rated_content(user)
-        
-        # Calculate favorite genres
-        favorite_genres = UserContextService._calculate_favorite_genres(
-            watchlist_data, rated_content
+        rated_content = UserContextService._get_rated_content(user, top_n=top_n)
+        favorite_genres = UserContextService._calculate_favorite_genres(rated_content)
+
+        watchlist_ids = list(
+            Watchlist.objects.filter(user=user).values_list('content_id', flat=True)[:50]
         )
-        
-        # Build context
-        context = {
-            'watchlist': [
-                {
-                    'title': item['title'],
-                    'genres': item.get('genres', []),
-                    'content_type': 'movie' if 'duration' in item else 'tvshow'
-                }
-                for item in watchlist_data
-            ],
+
+        return {
+            'watchlist_ids': watchlist_ids,
             'rated_content': rated_content,
             'favorite_genres': favorite_genres,
-            'total_ratings': len(rated_content),
-            'watchlist_count': len(watchlist_data)
+            'total_ratings': Rating.objects.filter(user=user).count(),
+            'watchlist_count': len(watchlist_ids),
         }
-        
-        return context
-    
+
     @staticmethod
-    def _get_rated_content(user) -> List[Dict]:
+    def _get_rated_content(user, top_n: int = 20) -> List[Dict]:
         """
-        Get user's rated content with details
-        
-        Args:
-            user: User instance
-            
-        Returns:
-            List of rated content with details
+        Fetch user's top-N highest-rated items with TMDB metadata.
+        Parallel TMDB calls — fast even at top_n=20.
         """
-        ratings = Rating.objects.filter(user=user).select_related().order_by('-created_at')
-        
-        rated_content = []
-        for rating in ratings:
-            # Get content details
-            if rating.content_type == 'movie':
-                try:
-                    content = Movie.objects.get(id=rating.content_id)
-                    rated_content.append({
-                        'title': content.title,
-                        'score': float(rating.score),
-                        'genres': content.genres,
-                        'content_type': 'movie'
-                    })
-                except Movie.DoesNotExist:
-                    continue
-            elif rating.content_type == 'tvshow':
-                try:
-                    content = TVShow.objects.get(id=rating.content_id)
-                    rated_content.append({
-                        'title': content.title,
-                        'score': float(rating.score),
-                        'genres': content.genres,
-                        'content_type': 'tvshow'
-                    })
-                except TVShow.DoesNotExist:
-                    continue
-        
-        return rated_content
-    
+        ratings = list(
+            Rating.objects.filter(user=user)
+            .order_by('-score', '-created_at')[:top_n]
+        )
+
+        def fetch(r):
+            try:
+                if r.content_type == 'movie':
+                    data = TMDBService.get_movie_details(r.content_id)
+                else:
+                    data = TMDBService.get_tv_details(r.content_id)
+                if data:
+                    genres = [g['name'] if isinstance(g, dict) else g for g in data.get('genres', [])]
+                    return {
+                        'content_id': r.content_id,
+                        'content_type': r.content_type,
+                        'title': data.get('title') or data.get('name', ''),
+                        'score': float(r.score),
+                        'genres': genres,
+                    }
+            except Exception:
+                pass
+            return None
+
+        result = []
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            for fut in as_completed({ex.submit(fetch, r): r for r in ratings}):
+                val = fut.result()
+                if val:
+                    result.append(val)
+
+        result.sort(key=lambda x: x['score'], reverse=True)
+        return result
+
     @staticmethod
-    def _calculate_favorite_genres(watchlist_data: List[Dict], rated_content: List[Dict]) -> List[str]:
-        """
-        Calculate user's favorite genres based on watchlist and high ratings
-        
-        Args:
-            watchlist_data: User's watchlist
-            rated_content: User's rated content
-            
-        Returns:
-            List of top 3 favorite genres
-        """
-        genre_counter = Counter()
-        
-        # Count genres from watchlist (weight: 1)
-        for item in watchlist_data:
-            genres = item.get('genres', [])
-            for genre in genres:
-                genre_counter[genre] += 1
-        
-        # Count genres from highly rated content (score >= 4.0, weight: 2)
+    def _calculate_favorite_genres(rated_content: List[Dict]) -> List[str]:
+        """Top genres weighted by rating score."""
+        genre_counter: Counter = Counter()
         for item in rated_content:
-            if item['score'] >= 4.0:
-                genres = item.get('genres', [])
-                for genre in genres:
-                    genre_counter[genre] += 2
-        
-        # Return top 3 genres
-        return [genre for genre, count in genre_counter.most_common(3)]
+            weight = int(item['score'])
+            for genre in item.get('genres', []):
+                genre_counter[genre] += weight
+        return [g for g, _ in genre_counter.most_common(5)]
+
+    @staticmethod
+    def get_all_rated_ids(user) -> set:
+        """Return set of (content_id, content_type) tuples the user has rated."""
+        return set(
+            Rating.objects.filter(user=user).values_list('content_id', 'content_type')
+        )

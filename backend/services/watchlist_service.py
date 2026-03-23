@@ -17,29 +17,36 @@ class WatchlistService:
         Returns:
             List of content with details from TMDB
         """
-        watchlist_items = Watchlist.objects.filter(user=user).order_by('-added_at')
-        
-        result = []
-        for item in watchlist_items:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        watchlist_items = list(Watchlist.objects.filter(user=user).order_by('-added_at'))
+
+        def fetch(item):
             try:
                 if item.content_type == 'movie':
                     content = TMDBService.get_movie_details(item.content_id)
-                    if content:
-                        content['watchlist_id'] = item.id
-                        content['added_at'] = item.added_at.isoformat()
-                        content['content_type'] = 'movie'
-                        result.append(content)
                 elif item.content_type == 'tvshow':
                     content = TMDBService.get_tv_details(item.content_id)
-                    if content:
-                        content['watchlist_id'] = item.id
-                        content['added_at'] = item.added_at.isoformat()
-                        content['content_type'] = 'tvshow'
-                        result.append(content)
+                else:
+                    return None
+                if content:
+                    content['watchlist_id'] = item.id
+                    content['added_at'] = item.added_at.isoformat()
+                    content['content_type'] = item.content_type
+                    return content
             except Exception as e:
                 print(f"Error fetching content {item.content_id}: {e}")
-                continue
-        
+            return None
+
+        result = []
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            futures = {executor.submit(fetch, item): item for item in watchlist_items}
+            for fut in as_completed(futures):
+                item = fut.result()
+                if item:
+                    result.append(item)
+
+        result.sort(key=lambda x: x.get('added_at', ''), reverse=True)
         return result
     
     @staticmethod

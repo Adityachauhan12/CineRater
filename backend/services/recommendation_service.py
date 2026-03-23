@@ -1,292 +1,240 @@
 import json
-from typing import List, Dict, Optional
+from typing import List, Dict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from django.core.cache import cache
-from django.conf import settings
 from decouple import config
 from openai import OpenAI
-from movies.repositories import MovieRepository, TVShowRepository
-from movies.serializers import MovieSerializer, TVShowSerializer
 from services.user_context_service import UserContextService
-from services.gemini_service import GeminiService
+from services.embedding_service import EmbeddingService
+from movies.models import ContentEmbedding
+from services.tmdb_service import TMDBService
 
-# Try OpenAI first, fallback to Gemini
+# Groq — OpenAI-compatible API
 try:
-    openai_client = OpenAI(api_key=config('OPENAI_API_KEY'))
-    USE_OPENAI = True
-except:
-    USE_OPENAI = False
+    openai_client = OpenAI(
+        api_key=config('GROQ_API_KEY'),
+        base_url="https://api.groq.com/openai/v1",
+    )
+    USE_GROQ = True
+except Exception:
+    USE_GROQ = False
 
 
 class RecommendationService:
-    """Service for content recommendations (AI-powered and popular)"""
-    
-    # OpenAI configuration
-    OPENAI_API_KEY = config('OPENAI_API_KEY', default='')
-    OPENAI_MODEL = config('OPENAI_MODEL', default='gpt-4o-mini')
-    
-    # Cache TTL
-    AI_CACHE_TTL = 1800  # 30 minutes
-    
-    @staticmethod
-    def get_popular_by_region(region: str = 'GLOBAL', limit: int = 10) -> List[Dict]:
-        """
-        Get popular content by region (movies + TV shows merged)
-        
-        Args:
-            region: Region code (IN/US/GLOBAL)
-            limit: Number of items to return
-            
-        Returns:
-            List of popular content sorted by popularity
-        """
-        # Try specific region first
-        movies = MovieRepository.get_popular(region=region, limit=limit)
-        tvshows = TVShowRepository.get_popular(region=region, limit=limit)
-        
-        # If no content in specific region, fallback to all regions
-        if not movies and not tvshows and region != 'GLOBAL':
-            # Try all regions
-            all_movies = []
-            all_tvshows = []
-            for fallback_region in ['IN', 'US', 'GLOBAL']:
-                all_movies.extend(MovieRepository.get_popular(region=fallback_region, limit=limit))
-                all_tvshows.extend(TVShowRepository.get_popular(region=fallback_region, limit=limit))
-            
-            movies = all_movies[:limit]
-            tvshows = all_tvshows[:limit]
-        
-        # Serialize
-        movie_data = MovieSerializer(movies, many=True).data
-        tvshow_data = TVShowSerializer(tvshows, many=True).data
-        
-        # Add content_type field
-        for item in movie_data:
-            item['content_type'] = 'movie'
-        for item in tvshow_data:
-            item['content_type'] = 'tvshow'
-        
-        # Merge and sort by popularity_score
-        all_content = list(movie_data) + list(tvshow_data)
-        all_content.sort(key=lambda x: x['popularity_score'], reverse=True)
-        
-        return all_content[:limit]
-    
+    GROQ_MODEL = config('GROQ_MODEL', default='llama-3.3-70b-versatile')
+    AI_CACHE_TTL = 1800  # 30 min
+
     @staticmethod
     def get_ai_recommendations(user, region: str = 'GLOBAL') -> Dict:
-        """
-        Get AI-powered recommendations for user
-        
-        Args:
-            user: User instance
-            region: Region code
-            
-        Returns:
-            Dict with recommendations and metadata
-        """
-        # Check cache first
-        cache_key = f"recs:{user.id}:{region}"
-        cached_result = cache.get(cache_key)
-        if cached_result:
-            return cached_result
-        
+        cache_key = f"recs_v2:{user.id}"
+        cached = cache.get(cache_key)
+        if cached:
+            return cached
+
+        user_context = UserContextService.build_context(user, top_n=20)
+
+        # Not enough data — return popular from TMDB
+        if user_context['total_ratings'] < 3:
+            result = RecommendationService._popular_fallback(region)
+            cache.set(cache_key, result, timeout=600)
+            return result
+
         try:
-            # Step 1: Build user context
-            user_context = UserContextService.build_context(user)
-            
-            # Step 2: Get candidate pool (popular content)
-            candidate_pool = RecommendationService.get_popular_by_region(region, limit=20)
-            
-            # Step 3: If user has no history, return popular
-            if user_context['total_ratings'] == 0 and user_context['watchlist_count'] == 0:
-                result = {
-                    'type': 'popular',
-                    'region': region,
-                    'data': candidate_pool[:5]
-                }
-                cache.set(cache_key, result, timeout=RecommendationService.AI_CACHE_TTL)
+            # Get content the user has already rated (to exclude)
+            rated_ids = UserContextService.get_all_rated_ids(user)
+            watchlist_ids = set(user_context['watchlist_ids'])
+
+            # Build taste vector from top-rated items' embeddings
+            taste_vector = RecommendationService._build_taste_vector(
+                user_context['rated_content'], rated_ids
+            )
+
+            if taste_vector is None:
+                result = RecommendationService._popular_fallback(region)
+                cache.set(cache_key, result, timeout=600)
                 return result
-            
-            # Step 4: Build prompt and call OpenAI
-            prompt = RecommendationService._build_prompt(user_context, candidate_pool, region)
-            ai_response = RecommendationService._call_openai(prompt)
-            
-            # Step 5: Parse response and match with DB content
-            recommendations = RecommendationService._parse_ai_response(ai_response, candidate_pool)
-            
-            # Step 6: Build result
-            result = {
-                'type': 'ai',
-                'region': region,
-                'data': recommendations
-            }
-            
-            # Cache result
+
+            # Find similar content via cosine similarity across ContentEmbedding
+            candidates = RecommendationService._find_similar(
+                taste_vector, rated_ids, watchlist_ids, limit=20
+            )
+
+            if not candidates:
+                result = RecommendationService._popular_fallback(region)
+                cache.set(cache_key, result, timeout=600)
+                return result
+
+            # Fetch TMDB details for candidates in parallel
+            candidates_with_details = RecommendationService._enrich_candidates(candidates)
+
+            # Call Groq to generate personalised reasons
+            enriched = RecommendationService._add_ai_reasons(
+                user_context, candidates_with_details
+            )
+
+            result = {'type': 'ai', 'region': region, 'data': enriched}
             cache.set(cache_key, result, timeout=RecommendationService.AI_CACHE_TTL)
-            
             return result
-            
+
         except Exception as e:
-            print(f"AI Recommendation Error: {e}")
-            # Fallback to popular content
-            result = {
-                'type': 'popular',
-                'region': region,
-                'data': RecommendationService.get_popular_by_region(region, limit=5)
-            }
+            print(f"Recommendation error: {e}")
+            result = RecommendationService._popular_fallback(region)
             return result
-    
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+
     @staticmethod
-    def _build_prompt(user_context: Dict, candidate_pool: List[Dict], region: str) -> str:
+    def _build_taste_vector(rated_content: List[Dict], rated_ids: set):
         """
-        Build OpenAI prompt with user context and candidate pool
-        
-        Args:
-            user_context: User preferences and history
-            candidate_pool: Available content to recommend from
-            region: User's region
-            
-        Returns:
-            Formatted prompt string
+        Average the embeddings of the user's highest-rated content
+        to form a single taste vector.
         """
-        # Format candidate pool (only titles and genres)
-        pool_text = "\n".join([
-            f"- {item['title']} ({', '.join(item.get('genres', []))})"
-            for item in candidate_pool
-        ])
-        
-        # Format watchlist titles
-        watchlist_titles = [item['title'] for item in user_context['watchlist']]
-        
-        # Format rated content
-        rated_text = "\n".join([
-            f"- {item['title']} (rated {item['score']}/5.0, genres: {', '.join(item.get('genres', []))})"
-            for item in user_context['rated_content'][:5]  # Top 5 recent
-        ])
-        
-        prompt = f"""You are a movie recommendation engine for CineRater app.
+        # Only use items rated 8+ for the taste vector
+        high_rated = [r for r in rated_content if r['score'] >= 8.0]
+        if not high_rated:
+            high_rated = rated_content[:10]  # fall back to top 10
 
-User Profile:
-- Region: {region}
-- Favorite Genres: {', '.join(user_context['favorite_genres']) if user_context['favorite_genres'] else 'None'}
-- Total Ratings: {user_context['total_ratings']}
-- Watchlist Count: {user_context['watchlist_count']}
+        tmdb_ids = [r['content_id'] for r in high_rated]
+        embeddings = ContentEmbedding.objects.filter(
+            tmdb_id__in=tmdb_ids
+        ).values_list('embedding', flat=True)
 
-Recently Watched/Rated:
-{rated_text if rated_text else 'None'}
+        valid = [e for e in embeddings if e and len(e) == 384]
+        if not valid:
+            return None
 
-Current Watchlist:
-{', '.join(watchlist_titles) if watchlist_titles else 'None'}
+        # Average the vectors
+        dim = len(valid[0])
+        avg = [sum(v[i] for v in valid) / len(valid) for i in range(dim)]
+        # Normalise
+        norm = sum(x * x for x in avg) ** 0.5
+        if norm == 0:
+            return None
+        return [x / norm for x in avg]
 
-Available Content Pool (recommend ONLY from this list):
-{pool_text}
-
-Task: Recommend exactly 5 items from the pool above.
-
-Rules:
-1. Prioritize user's favorite genres: {', '.join(user_context['favorite_genres'][:2]) if user_context['favorite_genres'] else 'any'}
-2. AVOID content already in watchlist: {', '.join(watchlist_titles)}
-3. Consider region preferences for {region}
-4. Return ONLY valid JSON, no extra text or markdown
-
-Response format (STRICT JSON):
-{{
-  "recommendations": [
-    {{
-      "title": "exact title from pool",
-      "reason": "one line why this matches user taste"
-    }}
-  ]
-}}"""
-        
-        return prompt
-    
     @staticmethod
-    def _call_openai(prompt: str) -> str:
+    def _find_similar(taste_vector: list, rated_ids: set, watchlist_ids: set, limit: int = 20) -> List[Dict]:
         """
-        Call AI API with prompt (OpenAI first, Gemini fallback)
-        
-        Args:
-            prompt: Formatted prompt
-            
-        Returns:
-            AI response text
+        Scan ContentEmbedding table and return the top `limit` entries
+        by cosine similarity to taste_vector, excluding already-rated items.
         """
+        exclude_ids = {cid for cid, _ in rated_ids}
+
+        all_embeddings = ContentEmbedding.objects.exclude(
+            tmdb_id__in=exclude_ids
+        ).values('tmdb_id', 'content_type', 'title', 'embedding')
+
+        scored = []
+        for entry in all_embeddings:
+            emb = entry['embedding']
+            if not emb or len(emb) != 384:
+                continue
+            score = EmbeddingService.cosine_similarity(taste_vector, emb)
+            scored.append({
+                'content_id': entry['tmdb_id'],
+                'content_type': entry['content_type'],
+                'title': entry['title'],
+                'similarity': score,
+            })
+
+        scored.sort(key=lambda x: x['similarity'], reverse=True)
+        return scored[:limit]
+
+    @staticmethod
+    def _enrich_candidates(candidates: List[Dict]) -> List[Dict]:
+        """Fetch TMDB details for candidate items in parallel."""
+        def fetch(c):
+            try:
+                if c['content_type'] == 'movie':
+                    data = TMDBService.get_movie_details(c['content_id'])
+                else:
+                    data = TMDBService.get_tv_details(c['content_id'])
+                if data:
+                    data['content_type'] = c['content_type']
+                    data['similarity'] = c['similarity']
+                    return data
+            except Exception:
+                pass
+            return None
+
+        result = []
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            for fut in as_completed({ex.submit(fetch, c): c for c in candidates}):
+                val = fut.result()
+                if val:
+                    result.append(val)
+
+        result.sort(key=lambda x: x.get('similarity', 0), reverse=True)
+        return result[:15]
+
+    @staticmethod
+    def _add_ai_reasons(user_context: Dict, candidates: List[Dict]) -> List[Dict]:
+        """Call Groq once to add one-line reasons for each recommendation."""
+        if not USE_GROQ or not candidates:
+            for c in candidates:
+                c['ai_reason'] = f"Matches your taste in {', '.join(user_context['favorite_genres'][:2]) or 'great cinema'}"
+            return candidates
+
+        top_rated_titles = [
+            f"{r['title']} ({r['score']}/10)"
+            for r in user_context['rated_content'][:8]
+        ]
+        candidate_titles = [
+            c.get('title') or c.get('name', '') for c in candidates
+        ]
+
+        prompt = f"""You are a film recommendation assistant. The user loves:
+Genres: {', '.join(user_context['favorite_genres']) or 'various'}
+Top rated films: {', '.join(top_rated_titles)}
+
+For each recommended title below, write ONE short sentence (max 12 words) explaining why it fits their taste.
+Titles: {json.dumps(candidate_titles)}
+
+Reply ONLY with a JSON object mapping exact title strings to reason strings.
+Example: {{"Title A": "reason", "Title B": "reason"}}"""
+
         try:
-            # Try OpenAI first
-            if USE_OPENAI:
-                try:
-                    response = openai_client.chat.completions.create(
-                        model=RecommendationService.OPENAI_MODEL,
-                        messages=[
-                            {"role": "system", "content": "You are a movie recommendation expert. Always respond with valid JSON only."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        temperature=0.7,
-                        max_tokens=500
-                    )
-                    return response.choices[0].message.content
-                except Exception as e:
-                    if "429" in str(e) or "quota" in str(e).lower():
-                        print(f"OpenAI quota exceeded, falling back to Gemini: {e}")
-                        # Fall through to Gemini
-                    else:
-                        print(f"OpenAI API Error: {e}")
-                        raise e
-            
-            # Fallback to Gemini
-            print("Using Gemini for recommendations")
-            messages = [
-                {"role": "system", "content": "You are a movie recommendation expert. Always respond with valid JSON only."},
-                {"role": "user", "content": prompt}
-            ]
-            response = GeminiService.chat_completion(messages)
-            if response:
-                return response
-            else:
-                raise Exception("Gemini API failed")
-            
+            response = openai_client.chat.completions.create(
+                model=RecommendationService.GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": "Reply only with valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.6,
+                max_tokens=600,
+            )
+            raw = response.choices[0].message.content.strip()
+            if raw.startswith('```'):
+                raw = raw.split('```')[1]
+                if raw.startswith('json'):
+                    raw = raw[4:]
+            reasons: dict = json.loads(raw)
         except Exception as e:
-            print(f"AI API Error: {e}")
-            raise e
-    
+            print(f"Groq reason generation failed: {e}")
+            reasons = {}
+
+        # Fuzzy match reasons (case-insensitive)
+        reasons_lower = {k.lower().strip(): v for k, v in reasons.items()}
+        genres_str = ', '.join(user_context['favorite_genres'][:2]) or 'great cinema'
+        for c in candidates:
+            title = (c.get('title') or c.get('name', '')).strip()
+            reason = reasons_lower.get(title.lower()) or reasons.get(title)
+            c['ai_reason'] = reason or f"Recommended based on your love of {genres_str}"
+
+        return candidates
+
     @staticmethod
-    def _parse_ai_response(response_text: str, candidate_pool: List[Dict]) -> List[Dict]:
-        """
-        Parse OpenAI response and match with actual content
-        
-        Args:
-            response_text: AI response JSON string
-            candidate_pool: Available content
-            
-        Returns:
-            List of matched content with AI reasons
-        """
+    def _popular_fallback(region: str) -> Dict:
+        """Fetch popular content from TMDB as fallback."""
         try:
-            # Parse JSON response
-            response_text = response_text.strip()
-            if response_text.startswith('```json'):
-                response_text = response_text.replace('```json', '').replace('```', '').strip()
-            
-            data = json.loads(response_text)
-            recommendations = data.get('recommendations', [])
-            
-            # Match with candidate pool
-            result = []
-            for rec in recommendations:
-                title = rec.get('title', '')
-                reason = rec.get('reason', 'Recommended for you')
-                
-                # Find matching content in pool
-                for content in candidate_pool:
-                    if content['title'].lower() == title.lower():
-                        matched_content = content.copy()
-                        matched_content['ai_reason'] = reason
-                        result.append(matched_content)
-                        break
-            
-            return result[:5]  # Return max 5
-            
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"AI Response Parse Error: {e}")
-            # Fallback: return top 5 from pool
-            return candidate_pool[:5]
+            movies = TMDBService.get_popular_movies(region=region, page=1)[:8]
+            tv = TMDBService.get_popular_tv(region=region, page=1)[:7]
+            for m in movies:
+                m['content_type'] = 'movie'
+            for t in tv:
+                t['content_type'] = 'tvshow'
+            data = (movies + tv)
+            data.sort(key=lambda x: x.get('popularity', 0), reverse=True)
+        except Exception:
+            data = []
+        return {'type': 'popular', 'region': region, 'data': data[:15]}

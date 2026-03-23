@@ -2,7 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
-from services.recommendation_service import RecommendationService
+from services.multi_agent_recommendation_service import MultiAgentRecommendationService
 from services.location_service import LocationService
 from services.tmdb_service import TMDBService
 
@@ -18,14 +18,15 @@ class RecommendationsView(APIView):
         
         try:
             # Get AI recommendations
-            result = RecommendationService.get_ai_recommendations(request.user, region)
-            
+            result = MultiAgentRecommendationService.get_recommendations(request.user, region)
+
             return Response({
-                'success': True,
-                'type': result['type'],
-                'region': result['region'],
-                'count': len(result['data']),
-                'data': result['data']
+                'success':       True,
+                'type':          result['type'],
+                'region':        result['region'],
+                'count':         len(result['data']),
+                'taste_profile': result.get('taste_profile'),
+                'data':          result['data'],
             }, status=status.HTTP_200_OK)
             
         except Exception as e:
