@@ -9,14 +9,12 @@
 | Semantic Search (embeddings) | ✅ Complete |
 | CineBot (AI Chat + SSE streaming) | ✅ Complete |
 | MCP Server (7 tools) | ✅ Built (untested with Claude Desktop) |
-| Recommendations API | ⚠️ Basic — single OpenAI call, no UI |
+| Recommendations UI + Multi-agent pipeline | ✅ Complete |
+| Text Reviews + RAG Q&A | ✅ Complete |
+| Mood-based Discovery | ✅ Complete |
+| Persistent CineBot Chat History | ✅ Complete |
 | Google OAuth | ⚠️ Frontend button exists, backend missing |
 | WebSockets infrastructure | ⚠️ Django Channels + Redis configured, no consumers |
-| Text Reviews | ❌ Model missing |
-| Review RAG Q&A | ❌ Not started |
-| Recommendation UI | ❌ API exists, no frontend page |
-| Mood-based Discovery | ❌ Not started |
-| Chat History Persistence | ❌ Stateless right now |
 | User Profiles | ❌ No public profile page |
 | Docker / CI | ❌ Not started |
 

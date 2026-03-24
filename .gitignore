@@ -15,8 +15,13 @@ db.sqlite3
 media/
 staticfiles/
 
-# Environment
+# Environment — never commit real secrets
 .env
+.env.local
+.env.production
+backend/.env
+frontend/.env
+frontend/.env.local
 
 # IDE
 .vscode/

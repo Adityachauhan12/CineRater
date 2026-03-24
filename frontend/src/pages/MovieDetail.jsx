@@ -147,7 +147,7 @@ const MovieDetail = () => {
           src={bgImage}
           alt={title}
           className="absolute inset-0 w-full h-full object-cover"
-          style={{ filter: 'brightness(0.45)' }}
+          style={{ filter: 'brightness(0.65)' }}
         />
         {/* Gradient */}
         <div className="absolute inset-0 bg-gradient-to-r from-void via-void/60 to-transparent" />
