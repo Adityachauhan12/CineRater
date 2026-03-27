@@ -13,7 +13,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
+from rest_framework.throttling import UserRateThrottle
 from services.tmdb_service import TMDBService
+
+
+class AISearchThrottle(UserRateThrottle):
+    scope = 'ai_search'
 from services.embedding_service import EmbeddingService
 from services.rating_service import RatingService
 from services.watchlist_service import WatchlistService
@@ -30,6 +35,7 @@ class SemanticSearchView(APIView):
     any exact TMDB keyword hits.
     """
     permission_classes = [IsAuthenticated]
+    throttle_classes = [AISearchThrottle]
 
     def post(self, request):
         query = request.data.get('query', '').strip()

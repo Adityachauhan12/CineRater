@@ -26,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-z#)b((ycn13*9aa)a_rirs)2e8)h%ygid66gf5t(#f(3lr8yr!')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=bool)
 
 ALLOWED_HOSTS = config(
     'ALLOWED_HOSTS',
@@ -191,6 +191,16 @@ REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': (
         'rest_framework.renderers.JSONRenderer',
     ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'user': '1000/day',
+        'ai_chat': '60/hour',        # CineBot streaming
+        'ai_recommend': '20/hour',   # Multi-agent pipeline
+        'ai_search': '100/hour',     # Semantic search
+        'ai_rag': '60/hour',         # RAG Q&A
+    },
 }
 
 # JWT Configuration

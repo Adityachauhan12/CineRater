@@ -1,6 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
 from services.rating_service import RatingService
 from services.watchlist_service import WatchlistService
@@ -119,7 +119,7 @@ class ContentRateDeleteView(APIView):
 
 class ContentRatingsView(APIView):
     """Get rating statistics for content"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
     
     def get(self, request, pk):
         content_type = request.query_params.get('content_type', 'movie')
@@ -194,9 +194,9 @@ class UserRatingsView(APIView):
         def fetch(r):
             try:
                 if r.content_type == 'movie':
-                    content = TMDBService.get_movie_details(r.content_id)
+                    content = TMDBService._make_request(f"/movie/{r.content_id}")
                 else:
-                    content = TMDBService.get_tv_details(r.content_id)
+                    content = TMDBService._make_request(f"/tv/{r.content_id}")
                 if content:
                     content['user_rating'] = float(r.score)
                     content['content_type'] = r.content_type

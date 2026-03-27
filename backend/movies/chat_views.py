@@ -5,14 +5,20 @@ POST /api/chat/ → streams Server-Sent Events back to the frontend.
 
 import json
 from django.http import StreamingHttpResponse
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from services.ai_agent_service import run_agent_stream
+
+
+class AIChatThrottle(UserRateThrottle):
+    scope = 'ai_chat'
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@throttle_classes([AIChatThrottle])
 def chat_stream(request):
     """
     POST /api/chat/

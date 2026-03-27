@@ -10,20 +10,20 @@ class RatingService:
     @staticmethod
     def validate_score(score: float) -> None:
         """
-        Validate rating score is between 1.0 and 5.0
-        
+        Validate rating score is between 1.0 and 10.0
+
         Args:
             score: Rating score
-            
+
         Raises:
-            ValueError: If score is not between 1.0 and 5.0
+            ValueError: If score is not between 1.0 and 10.0
         """
         if not isinstance(score, (int, float, Decimal)):
             raise ValueError("Score must be a number")
-        
+
         score = float(score)
-        if score < 1.0 or score > 5.0:
-            raise ValueError("Score must be between 1.0 and 5.0")
+        if score < 1.0 or score > 10.0:
+            raise ValueError("Score must be between 1.0 and 10.0")
     
     @staticmethod
     def get_user_rating(user, content_id: int, content_type: str) -> Optional[Rating]:
@@ -56,7 +56,7 @@ class RatingService:
             user: User instance
             content_id: Content ID
             content_type: 'movie' or 'tvshow'
-            score: Rating score (1.0-5.0)
+            score: Rating score (1.0-10.0)
             
         Returns:
             Dict with rating info
@@ -124,7 +124,7 @@ class RatingService:
         
         # Distribution (count per score)
         distribution = {}
-        for i in range(1, 6):
+        for i in range(1, 11):
             count = ratings.filter(score__gte=i, score__lt=i+1).count()
             distribution[str(i)] = count
         

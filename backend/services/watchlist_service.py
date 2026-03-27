@@ -1,6 +1,9 @@
+import logging
 from typing import List, Dict
 from movies.models import Watchlist
 from services.tmdb_service import TMDBService
+
+logger = logging.getLogger(__name__)
 
 
 class WatchlistService:
@@ -23,10 +26,11 @@ class WatchlistService:
 
         def fetch(item):
             try:
+                # Use basic endpoint (just poster/title/year) — full details not needed for list view
                 if item.content_type == 'movie':
-                    content = TMDBService.get_movie_details(item.content_id)
+                    content = TMDBService._make_request(f"/movie/{item.content_id}")
                 elif item.content_type == 'tvshow':
-                    content = TMDBService.get_tv_details(item.content_id)
+                    content = TMDBService._make_request(f"/tv/{item.content_id}")
                 else:
                     return None
                 if content:
@@ -35,7 +39,7 @@ class WatchlistService:
                     content['content_type'] = item.content_type
                     return content
             except Exception as e:
-                print(f"Error fetching content {item.content_id}: {e}")
+                logger.warning("Error fetching content %s: %s", item.content_id, e)
             return None
 
         result = []

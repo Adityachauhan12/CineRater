@@ -69,26 +69,67 @@ class TMDBService:
 
     @staticmethod
     def get_movie_details(tmdb_id: int) -> Optional[Dict]:
-        """Get detailed movie information"""
-        data = TMDBService._make_request(f"/movie/{tmdb_id}")
-        if data and 'genres' in data:
+        """Get detailed movie information including cast, trailer, and similar titles."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            main_fut    = executor.submit(TMDBService._make_request, f"/movie/{tmdb_id}")
+            credits_fut = executor.submit(TMDBService._make_request, f"/movie/{tmdb_id}/credits")
+            videos_fut  = executor.submit(TMDBService._make_request, f"/movie/{tmdb_id}/videos")
+            similar_fut = executor.submit(TMDBService._make_request, f"/movie/{tmdb_id}/similar")
+
+        data    = main_fut.result()
+        credits = credits_fut.result()
+        videos  = videos_fut.result()
+        similar = similar_fut.result()
+
+        if not data:
+            return None
+
+        if 'genres' in data:
             data['genres'] = [genre['name'] for genre in data['genres']]
-        if data:
-            credits = TMDBService._make_request(f"/movie/{tmdb_id}/credits")
-            if credits:
-                cast = credits.get('cast', [])
-                data['cast'] = [
-                    {
-                        'id': m.get('id'),
-                        'name': m.get('name'),
-                        'character': m.get('character'),
-                        'profile_path': m.get('profile_path'),
-                    }
-                    for m in cast[:10]
-                ]
-                crew = credits.get('crew', [])
-                directors = [c for c in crew if c.get('job') == 'Director']
-                data['director'] = directors[0].get('name') if directors else None
+
+        if credits:
+            cast = credits.get('cast', [])
+            data['cast'] = [
+                {
+                    'id': m.get('id'),
+                    'name': m.get('name'),
+                    'character': m.get('character'),
+                    'profile_path': m.get('profile_path'),
+                }
+                for m in cast[:10]
+            ]
+            crew = credits.get('crew', [])
+            directors = [c for c in crew if c.get('job') == 'Director']
+            data['director'] = directors[0].get('name') if directors else None
+
+        # First YouTube trailer, falling back to teaser
+        trailer_key = None
+        if videos:
+            all_vids = videos.get('results', [])
+            trailers = [v for v in all_vids if v.get('site') == 'YouTube' and v.get('type') == 'Trailer']
+            teasers  = [v for v in all_vids if v.get('site') == 'YouTube' and v.get('type') == 'Teaser']
+            picked = trailers or teasers
+            if picked:
+                trailer_key = picked[0].get('key')
+        data['trailer_key'] = trailer_key
+
+        # Similar movies (poster, title, score)
+        data['similar'] = []
+        if similar:
+            data['similar'] = [
+                {
+                    'id': m.get('id'),
+                    'title': m.get('title'),
+                    'poster_path': m.get('poster_path'),
+                    'vote_average': m.get('vote_average'),
+                    'release_date': m.get('release_date'),
+                }
+                for m in similar.get('results', [])[:10]
+                if m.get('poster_path')
+            ]
+
         return data
 
     @staticmethod
@@ -102,23 +143,64 @@ class TMDBService:
 
     @staticmethod
     def get_tv_details(tmdb_id: int) -> Optional[Dict]:
-        """Get detailed TV show information"""
-        data = TMDBService._make_request(f"/tv/{tmdb_id}")
-        if data and 'genres' in data:
+        """Get detailed TV show information including cast, trailer, and similar titles."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            main_fut    = executor.submit(TMDBService._make_request, f"/tv/{tmdb_id}")
+            credits_fut = executor.submit(TMDBService._make_request, f"/tv/{tmdb_id}/credits")
+            videos_fut  = executor.submit(TMDBService._make_request, f"/tv/{tmdb_id}/videos")
+            similar_fut = executor.submit(TMDBService._make_request, f"/tv/{tmdb_id}/similar")
+
+        data    = main_fut.result()
+        credits = credits_fut.result()
+        videos  = videos_fut.result()
+        similar = similar_fut.result()
+
+        if not data:
+            return None
+
+        if 'genres' in data:
             data['genres'] = [genre['name'] for genre in data['genres']]
-        if data:
-            credits = TMDBService._make_request(f"/tv/{tmdb_id}/credits")
-            if credits:
-                cast = credits.get('cast', [])
-                data['cast'] = [
-                    {
-                        'id': m.get('id'),
-                        'name': m.get('name'),
-                        'character': m.get('character'),
-                        'profile_path': m.get('profile_path'),
-                    }
-                    for m in cast[:10]
-                ]
+
+        if credits:
+            cast = credits.get('cast', [])
+            data['cast'] = [
+                {
+                    'id': m.get('id'),
+                    'name': m.get('name'),
+                    'character': m.get('character'),
+                    'profile_path': m.get('profile_path'),
+                }
+                for m in cast[:10]
+            ]
+
+        # First YouTube trailer, falling back to teaser
+        trailer_key = None
+        if videos:
+            all_vids = videos.get('results', [])
+            trailers = [v for v in all_vids if v.get('site') == 'YouTube' and v.get('type') == 'Trailer']
+            teasers  = [v for v in all_vids if v.get('site') == 'YouTube' and v.get('type') == 'Teaser']
+            picked = trailers or teasers
+            if picked:
+                trailer_key = picked[0].get('key')
+        data['trailer_key'] = trailer_key
+
+        # Similar shows (poster, name, score)
+        data['similar'] = []
+        if similar:
+            data['similar'] = [
+                {
+                    'id': m.get('id'),
+                    'name': m.get('name'),
+                    'poster_path': m.get('poster_path'),
+                    'vote_average': m.get('vote_average'),
+                    'first_air_date': m.get('first_air_date'),
+                }
+                for m in similar.get('results', [])[:10]
+                if m.get('poster_path')
+            ]
+
         return data
 
     @staticmethod

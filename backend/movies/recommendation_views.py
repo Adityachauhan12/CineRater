@@ -2,14 +2,20 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
+from rest_framework.throttling import UserRateThrottle
 from services.multi_agent_recommendation_service import MultiAgentRecommendationService
 from services.location_service import LocationService
 from services.tmdb_service import TMDBService
 
 
+class AIRecommendThrottle(UserRateThrottle):
+    scope = 'ai_recommend'
+
+
 class RecommendationsView(APIView):
     """Get AI-powered recommendations for authenticated user"""
     permission_classes = [IsAuthenticated]
+    throttle_classes = [AIRecommendThrottle]
     
     def get(self, request):
         # Get user's region from IP

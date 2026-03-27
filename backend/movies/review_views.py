@@ -2,8 +2,13 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework import status
+from rest_framework.throttling import UserRateThrottle
 from services.review_service import ReviewService
 from services.rag_service import RAGService
+
+
+class AIRAGThrottle(UserRateThrottle):
+    scope = 'ai_rag'
 
 
 class ContentReviewsView(APIView):
@@ -70,6 +75,7 @@ class ContentAskView(APIView):
     Returns: {answer, sources, review_count}
     """
     permission_classes = [IsAuthenticatedOrReadOnly]
+    throttle_classes = [AIRAGThrottle]
 
     def post(self, request, pk):
         content_type = request.data.get('content_type', 'movie')
